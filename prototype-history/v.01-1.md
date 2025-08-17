@@ -1,0 +1,361 @@
+# OntoMind v0.1 — Personal Ontology Framework (LLM × Me)
+
+> 목적: “나와 LLM이 같은 세계관에서 생각하도록” 내 삶/업무 도메인을 온톨로지로 구조화하고, 이를 프롬프트·RAG·에이전트 흐름에 일관되게 연결하는 최소한의 규격을 정의한다.
+
+⸻
+
+## 0) 디자인 원칙
+
+- **Pragmatic first**: RDF/OWL은 참고하되, v0.1은 가벼운 스키마/DSL로 시작.
+- **Human-in-the-loop**: 자동 추론보다 내 의사결정 보조에 초점.
+- **Composable**: 도메인별 모듈(Work/People/Project/Knowledge)을 조립가능하게.
+- **Traceable**: 근거(Source)와 확신도(Confidence)를 남김.
+- **LLM-ready**: 스키마 → JSON I/O → 프롬프트 템플릿을 표준화.
+
+⸻
+
+## 1) 핵심 개념 (Information Model)
+
+- **Entity**: 세계를 구성하는 대상 (예: Project, Person, Widget, Document)
+- **Attribute**: 엔티티의 속성 (타입/제약 포함)
+- **Relation**: 엔티티 간 의미있는 연결 (유형/방향/카디널리티)
+- **Event:** 시간 기반 변화/행위 (예: 미팅, 릴리스, 결정)
+- **Intent**: 내가 LLM에게 시키는 목적/요청의 분류 (예: Summarize, Plan, Diagnose)
+- **Context**: 질의 시 유효 범위/상황 (시간/스코프/역할/권한)
+- **Policy**: 제약, 금지, 우선순위 규칙 (예: 개인정보, 톤&스타일)
+- **Source**: 근거 문서/링크/저자/시간
+- **Confidence**: 지식의 신뢰도(0~1)
+
+⸻
+
+## 2) 네이밍 & 네임스페이스
+
+- **전역 prefix**: om: (OntoMind)
+- **도메인 prefix** 예: work:, people:, project:, fe:(frontend), kb:(knowledge)
+- **ID 규칙**: prefix:Type/slug#version (예: project:Project/spaceone#2024-09)
+
+⸻
+
+$1
+
+## 3-1) 왜 Schema와 YAML DSL을 분리하나?
+
+- **역할 분리** (Authoring vs. Runtime): YAML DSL은 사람이 읽고 쓰기 쉬운 선언적 정의이며, 제품/문서화/버전관리 친화적. TS Schema는 런타임 타입·검증·코드 완성을 위한 개발자용 계약.
+- **도구 생태계**: DSL → (코드젠) → TS 타입/JSON Schema/폼 메타데이터를 생성. 역으로 TS를 직접 고치지 않고도 모델을 진화시킬 수 있음.
+- **안전한 변경**: DSL 변경 → CI에서 스키마 컴파일/검증 → 실패 시 차단. UI·LLM 프롬프트·API가 한꺼번에 깨지지 않도록 중앙 계약을 유지.
+- **휴먼-LLM 공용 캡슐화**: DSL은 LLM 프롬프트에 삽입하기 쉬운 요약을 만들 수 있고, TS는 애플리케이션 코드의 타입 안정성을 보장.
+- **이식성/벤더 중립**: DSL은 특정 언어나 런타임에 종속되지 않아, 다양한 스택(노션/지라/크롬익스텐션/노드 앱)으로 확장 용이.
+
+## 3-2) 모델 속성 상세 설명 (Field-by-Field)
+
+아래 설명은 현재 v0.1 스펙을 기준으로 하며, 괄호(확장)는 이후 v0.2+ 제안 필드.
+
+### AttributeSpec
+
+- **name**: 속성 키. snake_case 권장. 엔티티 인스턴스의 JSON 키로 사용.
+- **type**: 프리미티브 혹은 특수 타입.
+	- string|number|boolean|date|url|markdown|id|json|enum
+	- enum인 경우 enumValues 필수.
+	- id는 다른 엔티티를 가리키는 참조(축약 표기). (확장: ref로 Class 지정)
+- **required?**: 인스턴스에 필수 여부. 검증기에서 누락 시 에러.
+- **enumValues?**: type: enum 전용. 허용값 목록. (확장: default, pattern, min/max, unique, computed)
+
+### EntityType
+
+- **type**: 엔티티의 클래스명. DSL entities[].type와 일치.
+- **attributes**: 해당 클래스가 가지는 속성 목록. UI 폼 자동 생성·검증에 사용.
+	- (확장: extends로 상속, status(draft/active/deprecated), policyRefs[] 적용)
+
+### RelationType
+
+- **name**: 관계명. 동사형 권장(owns, depends_on).
+- **from / to**: 관계의 도메인/레인지. 각각 EntityType.type을 참조.
+- **cardinality?**: 허용되는 연결수.
+	- 1-1 (최대 1대1), 1-N (하나는 여럿에), N-N (여럿-여럿)
+- **directed?**: 방향성. 기본 true. false면 무방향(대칭) 관계로 처리.
+	- (확장: inverseOf, symmetric, transitive)
+
+### EventType
+
+- **type**: 이벤트 클래스명 (Decision, Meeting, Release 등).
+- **attributes**: 이벤트가 가지는 속성. 예: at(date), summary(markdown), actors(json).
+
+### PolicyRule
+
+- **name**: 정책명.
+- **description**: 정책 설명.
+- **when?**: 적용 조건. 예: { role: 'coach' }, { visibility: 'admin' }.
+- **forbid?**: 금지 동작 키워드. 예: leak_sensitive_personal_info.
+- **prefer?**: 선호 규칙. 예: "cite_sources", "be_concise".
+
+### IntentSpec
+
+- **name**: 의도명. 예: Plan, Summarize, Diagnose.
+- **input**: LLM 또는 함수에 전달될 파라미터 스펙(라이트). 예: { target: 'id:Project' }.
+- **output**: LLM이 반환해야 하는 JSON 구조(라이트). 예: { summary: 'markdown', highlights: 'json' }.
+	- 주의: 여기의 문자열은 타입 힌트이며, 실제 검증은 JSON Schema 변환기로 수행.
+	- 이 스펙은 함수 툴 스키마(OpenAI/Anthropic의 tool parameters) 생성에 사용됨.
+
+### ContextSpec
+
+- **name**: 컨텍스트 식별자. 예: Workspace:Admin, Week:2025-W33.
+- **filters?**: 질의 스코프 축소 규칙. 예: { visibility: 'admin' }, { type: 'Project' }.
+- **role?**: 프롬프트 톤·권한 힌트. me|lead|coach|analyst 등.
+
+## 3-3) 인스턴스(ABox) 필드 가이드 (예시 파일 기준)
+
+- **id**: 엔티티 식별자. namespace:Type/slug#version 패턴 권장.
+- **type**: 클래스명(EntityType.type). (확장: class로 네임스페이스/버전 포함)
+- **data/속성들**: AttributeSpec에 맞는 키-값 쌍. (v0.1에선 평평한 구조)
+- **source**: 근거(문서 링크, 노트, 저장소). 다수일 수 있음.
+- **confidence**: 0~1. 0.7 미만은 가설로 취급 권장.
+	- (확장: created_at, updated_at, visibility, policyRefs[], valid_from/to)
+
+## 3-4) 컴파일/검증 파이프라인(권장)
+
+1. DSL 파싱 → 내부 중간표현(IR)
+2. IR → JSON Schema 생성 (엔티티/인텐트 입·출력)
+3. IR → TS 타입 코드젠 (IDE 타입 세이프티)
+4. IR → 프롬프트 요약 (LLM System/Tool에 삽입할 압축 버전)
+5. 인스턴스 검증: JSONL 로드 → JSON Schema로 유효성 검사
+6. 관계 정합성 검사: from/to 클래스, 카디널리티, (역관계가 있다면) 자동 생성·대칭 체크
+7. 정책 적용: Context/Policy 매칭 → 민감정보/출처 강제 등
+
+⸻
+
+## 4) DSL (OML: OntoMind Markup Language, YAML)
+
+```yaml
+# ontomind.oml.yml
+version: 0.1
+namespaces: [work, people, project, fe, kb]
+
+entities:
+  - type: Project
+    attributes:
+      - { name: name, type: string, required: true }
+      - { name: goal, type: markdown }
+      - { name: status, type: enum, enumValues: [draft, active, paused, done] }
+      - { name: start_date, type: date }
+      - { name: end_date, type: date }
+
+  - type: Person
+    attributes:
+      - { name: display_name, type: string, required: true }
+      - { name: role, type: enum, enumValues: [fe, be, pm, designer, leader] }
+      - { name: strengths, type: json }
+      - { name: cautions, type: json }
+
+  - type: Widget
+    attributes:
+      - { name: name, type: string, required: true }
+      - { name: options, type: json }
+      - { name: version, type: string }
+
+relations:
+  - { name: owns, from: Person, to: Project, cardinality: '1-N' }
+  - { name: depends_on, from: Project, to: Project, cardinality: 'N-N' }
+  - { name: uses_widget, from: Project, to: Widget, cardinality: 'N-N' }
+  - { name: collaborates_with, from: Person, to: Person, cardinality: 'N-N', directed: false }
+
+intents:
+  - name: Plan
+    input:  { target: 'id:Project', horizon: 'string' }
+    output: { milestones: 'json', risks: 'json', next_actions: 'json' }
+  - name: Diagnose
+    input:  { target: 'id:Project' }
+    output: { symptoms: 'json', causes: 'json', remedies: 'json' }
+  - name: Summarize
+    input:  { scope: 'json' }
+    output: { summary: 'markdown', highlights: 'json' }
+
+contexts:
+  - name: Workspace:Admin
+    role: me
+    filters: { visibility: 'admin' }
+
+policies:
+  - name: Privacy.Person
+    description: '개인 민감정보 노출 금지, 필요 시 익명화'
+    forbid: ['leak_sensitive_personal_info']
+
+views: # 선택적: LLM 출력 포맷/테이블 정의
+  - name: ProjectHealth
+    of: Project
+    columns: [name, status, start_date, end_date]
+```
+
+⸻
+
+## 5) 지식 인스턴스(팩트) 예시 (JSON Lines)
+
+/ontomind/instances/projects.jsonl
+```json
+{"id":"project:Project/spaceone#2024-09","type":"Project","name":"SpaceONE Multi-Tenancy","status":"active","goal":"Admin/Workspace 스코프 분리 및 권한 전환 안정화","start_date":"2023-09-01","source":"notion:doc/123","confidence":0.9}
+{"id":"project:Project/console-vq-devtools#2025-05","type":"Project","name":"Console Vue Query Devtools","status":"done","goal":"Vue2.7용 커스텀 Devtools 출시","start_date":"2025-04-10","end_date":"2025-05-05","source":"github:repo/console-vq-devtools","confidence":0.95}
+```
+
+/ontomind/instances/people.jsonl
+```json
+{"id":"people:Person/yongtae","type":"Person","display_name":"박용태","role":"fe","strengths":["system thinking","query cache design"],"cautions":["context narrowing"],"confidence":1}
+```
+
+/ontomind/instances/relations.jsonl
+```json
+{"type":"owns","from":"people:Person/yongtae","to":"project:Project/console-vq-devtools#2025-05","source":"slack:msg/abc","confidence":0.9}
+{"type":"depends_on","from":"project:Project/spaceone#2024-09","to":"project:Project/console-vq-devtools#2025-05","confidence":0.6}
+```
+
+⸻
+
+## 6) LLM 연동 — 표준 프롬프트 템플릿
+
+### 6.1 System Prompt (고정)
+
+```
+You are OntoMind Agent. Always reason within the OntoMind ontology.
+- Use the provided schema (entities/relations/intents/contexts/policies).
+- Validate inputs/outputs against the schema.
+- Cite sources and include confidence scores when possible.
+- Prefer structured JSON per IntentSpec.output.
+```
+
+### 6.2 Tool/Function Spec (예: Diagnose)
+
+```json
+{
+  "name": "om_diagnose",
+  "description": "Diagnose a project's health within OntoMind ontology.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "target": {"type":"string", "description":"Project EntityID"}
+    },
+    "required": ["target"]
+  }
+}
+```
+
+LLM 응답 JSON 스펙 (IntentSpec.output에 맞춤)
+
+```json
+{
+  "symptoms": ["..."],
+  "causes": ["..."],
+  "remedies": ["..."],
+  "_meta": {"sources": ["..."], "confidence": 0.8}
+}
+```
+
+### 6.3 Grounding 프롬프트 스니펫
+
+```
+<SCHEMA>
+{...OML parsed summary...}
+</SCHEMA>
+<CONTEXT name="Workspace:Admin">{...}
+</CONTEXT>
+<OBJECTS>
+- load: /instances/projects.jsonl (filter id in ...)
+- load: /instances/relations.jsonl (join ...)
+</OBJECTS>
+<TASK intent="Diagnose" target="project:Project/spaceone#2024-09" />
+```
+
+⸻
+
+## 7) RAG 파이프라인 (하이브리드)
+
+1. Symbolic filter: Context/Policy로 스코프 축소 (엔티티 타입, 상태 등)
+2. Vector retrieve: 관련 문서/메모를 임베딩 검색
+3. Graph join: relations.jsonl 로 이웃 엔티티 합류
+4. Prompt assemble: 스키마 + 인스턴스 + 증거(Source) 묶어 LLM 호출
+5. Validator: IntentSpec.output JSON 스키마 검사 → 실패 시 재질의
+
+⸻
+
+## 8) 워크플로우 레시피
+
+- Daily Review (Summarize)
+ 	1. 오늘 이벤트/노트 인입 → instances/events.jsonl append
+ 	2. Context = Week:YYYY-WW
+ 	3. Intent=Summarize → summary.md 생성 (근거/다음 액션 포함)
+- Project Plan 갱신 (Plan)
+ 	1. Project ID 선택 → 관련 위젯/의존 프로젝트 조인
+ 	2. 위험/가정 추출 → Remedial actions 제안
+ 	3. Notion/Jira 동기화
+- Coaching Guide (Diagnose + Policy)
+ 	1. 사람-프로젝트-피드백 그래프 불러오기
+ 	2. Privacy.Policy 적용
+ 	3. 코칭 대화 스크립트 생성
+
+⸻
+
+## 9) 저장소 구조 (Git 관리)
+
+```
+ontomind/
+  schemas/
+    ontomind.schema.ts
+    ontomind.oml.yml
+  instances/
+    projects.jsonl
+    people.jsonl
+    relations.jsonl
+    events.jsonl
+    notes.jsonl
+  prompts/
+    system.txt
+    intents/
+      diagnose.json
+      plan.json
+      summarize.json
+  pipelines/
+    rag.hybrid.md
+  policies/
+    privacy.yml
+```
+
+⸻
+
+## 10) 검증 & 거버넌스
+
+- Schema Lint: OML → JSON Schema 변환 후 lint
+- ID Uniqueness: 프리커밋 훅으로 중복 탐지
+- Confidence Rule: 0.7 미만은 ‘가설’ 태그로 표기
+- Change Log: OML 변경 시 CHANGELOG.md 자동 생성
+
+⸻
+
+## 11) 최소 CLI 설계 (Node/TS)
+
+- `om validate` : OML/instances 검증
+- `om assemble --intent Diagnose --target <EntityID>`: 프롬프트 빌드 출력
+- `om export --view ProjectHealth`: 표/CSV 생성
+
+⸻
+
+## 12) v0.1 → v0.2 로드맵
+
+- v0.1: 스키마/DSL/샘플 인스턴스/프롬프트 템플릿/수동 RAG
+- v0.2: 간단 CLI, JSON Schema 기반 유효성 검사, 노션/지라 싱크 어댑터
+- v0.3: 임베딩 인덱스 + 하이브리드 검색, 그래프 뷰어(Sankey/Force)
+- v0.4: 코칭/피드백 온톨로지 확장(리더십 메타층)
+
+⸻
+
+## 13) 적용 예시 — FE 아키텍처 온톨로지 (요약)
+
+- Entity: Service, Resource, QueryKeyPolicy, Widget, DataSource
+- Relation: service-uses-resource, widget-binds-datasource, querykey-applies-to-resource
+- Intent: Diagnose (캐시 미스/중복 요청), Plan (마이그레이션 단계), Summarize (릴리즈 노트)
+
+⸻
+
+## 14) 시작 체크리스트
+
+- ontomind 저장소 생성
+- ontomind.oml.yml 베이스 커밋
+- people/projects/relations 3개 인스턴스 파일 작성(최소 5개 팩트)
+- system 프롬프트 고정 텍스트 확정
+- Daily/Summarize 파이프라인 수동 실행해 1주 검증
